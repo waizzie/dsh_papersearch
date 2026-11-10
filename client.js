@@ -632,10 +632,16 @@ window.__ModuleLoader__.load({
             }
           }
 
+          const sourcesForHost = wosParts ? list : list.filter((id) => id !== 'wos');
+          if (sourcesForHost.length === 0) {
+            setNotice(wosSkipped || 'WoS 还没就绪：请点「准备」等内嵌窗口加载完，或再勾一个其它源。');
+            return;
+          }
+
           const value = await call('search', {
             query: q,
             panel: true,
-            sources: wosParts ? list : list.filter((id) => id !== 'wos'),
+            sources: sourcesForHost,
             limit,
             sort,
             ...(wosParts ? { wosParts } : {}),

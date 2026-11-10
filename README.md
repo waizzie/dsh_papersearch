@@ -325,7 +325,8 @@ node test/smoke.mjs "retrieval augmented generation"   # 免登录源 + 渲染 +
 node test/all-sources.mjs "人工智能"                    # 四源联测（wos 走面板未连接报错路径）
 node test/wos-bridge.mjs                               # WoS 面板桥队列语义（离线）
 node test/wos-panel-flow.mjs                           # Host 侧面板链路 + 归一化（离线）
-node test/browser-offline.mjs                          # 浏览器引擎离线行为
+node test/routes-wos.mjs                               # 面板 HTTP 接口 + 长轮询 + 防死锁（离线）
+node test/browser-offline.mjs                          # 浏览器引擎离线行为（用 9223 端口，不会拉起 Chrome）
 ```
 
 ---

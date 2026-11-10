@@ -1,10 +1,15 @@
-/** 浏览器引擎的失败路径测试：端口未开时应给出可读、可操作的错误。 */
+/**
+ * 浏览器引擎的失败路径测试：端口未开时应给出可读、可操作的错误。
+ *
+ * 刻意用一个没人监听的端口（9223）+ 不存在的 chromePath，
+ * 这样测试**绝不会**真的拉起 Chrome 窗口。
+ */
 import { createBrowserEngine, BrowserUnavailableError } from '../lib/browser.js';
 
 const engine = createBrowserEngine({
-  port: 9222,
-  chromePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  packageDir: process.cwd() + '\\dsh-papersearch',
+  port: 9223,
+  chromePath: 'C:\\__dsh-papersearch-test__\\chrome.exe',
+  packageDir: process.cwd(),
   log: (m) => console.log('log:', m),
 });
 
