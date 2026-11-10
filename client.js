@@ -34,7 +34,7 @@ window.__ModuleLoader__.load({
     // 只能内联一份，改的时候两边要同步。
     const WOS_PAGE = 'https://www.webofscience.com/wos/woscc/basic-search';
     const WOS_SEARCH_PATH = '/api/wosnx/core/runQuerySearch';
-    const WOS_SORT = { relevance: 'relevance', date: 'date', cited: 'times-cited' };
+    const WOS_SORT = { relevance: 'relevance', date: 'date-descending', cited: 'times-cited-descending' };
     const WOS_LEASE_WORKSPACE = 'dsh-papersearch';
 
     function wosBody(query, opts = {}) {
@@ -85,7 +85,7 @@ window.__ModuleLoader__.load({
     /** 访客会话的被动验证：在页面里真搜一次（WoS 的 SPA 可能把界面放在同源 iframe 里）。 */
     function wosWarmupScript(query) {
       return '(async () => {'
-        + 'const findInput = (doc) => doc.querySelector("#search-option-0") || doc.querySelector(\'input[name="search-main-box"]\');'
+        + 'const findInput = (doc) => doc.querySelector(\'input[data-ta="search-criteria-input"]\') || doc.querySelector(\'input[name="search-main-box"]\') || doc.querySelector("#search-option-0");'
         + 'let doc = document;'
         + 'let input = findInput(doc);'
         + 'if (!input) {'
@@ -99,13 +99,28 @@ window.__ModuleLoader__.load({
         + 'setter.call(input, ' + JSON.stringify(String(query)) + ');'
         + 'input.dispatchEvent(new win.Event("input", { bubbles: true }));'
         + 'input.dispatchEvent(new win.Event("change", { bubbles: true }));'
-        + 'await new Promise((r) => setTimeout(r, 600));'
-        + 'const btn = doc.querySelector("button.search") || [...doc.querySelectorAll("button")].find((b) => (((b.innerText || "") + " " + (b.getAttribute("aria-label") || "")).toLowerCase().includes("search")));'
+        + 'input.dispatchEvent(new win.Event("keyup", { bubbles: true }));'
+        + 'await new Promise((r) => setTimeout(r, 700));'
+        + 'const btn = doc.querySelector(\'[data-ta="run-search"]\')'
+        + '  || doc.querySelector(\'button[type="submit"]\')'
+        + '  || [...doc.querySelectorAll("button")].find((b) => (((b.innerText || "") + " " + (b.getAttribute("aria-label") || "")).toLowerCase().includes("search")));'
         + 'if (!btn) return "no-button";'
         + 'btn.click();'
         + 'return "clicked";'
         + '})()';
     }
+
+    /** 内嵌页里有没有搜索框 / 人机验证。 */
+    const WOS_INPUT_PROBE = '(function(){'
+      + 'const find = (doc) => doc.querySelector(\'input[data-ta="search-criteria-input"]\') || doc.querySelector(\'input[name="search-main-box"]\') || doc.querySelector("#search-option-0");'
+      + 'if (find(document)) return "input";'
+      + 'for (const f of [...document.querySelectorAll("iframe")]) { try { const d = f.contentDocument; if (d && find(d)) return "input"; } catch (e) {} }'
+      + 'if (document.querySelector(\'iframe[src*="recaptcha"], iframe[title*="reCAPTCHA"], iframe[src*="hcaptcha"], .captcha-dialog, .captcha-backdrop\')) return "captcha";'
+      + 'return "none";'
+      + '})()';
+
+    /** 明确提示用户去内嵌窗口里完成人机验证 / 登录。 */
+    const CAPTCHA_HINT = 'WoS 要求人机验证（reCAPTCHA）：请点「展开」，在内嵌窗口里完成验证或登录一次，然后重新检索。';
 
     /** 桌面端浏览器桥；Web 端没有，返回 null。 */
     function desktopBrowser() {
@@ -476,6 +491,24 @@ window.__ModuleLoader__.load({
         return false;
       }, [execInWv]);
 
+      /** 等内嵌页把搜索框渲染出来（刚 dom-ready 时 Angular 还没画完）。 */
+      const waitForInput = useCallback(async (timeoutMs = 20000) => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          try {
+            const state = await execInWv(WOS_INPUT_PROBE);
+            if (state === 'input' || state === 'captcha') return state;
+          } catch { /* 页面切换中，继续等 */ }
+          await new Promise((r) => setTimeout(r, 700));
+        }
+        return 'none';
+      }, [execInWv]);
+
+      /** 内嵌页当前是否弹着人机验证。 */
+      const hasCaptcha = useCallback(async () => {
+        try { return (await execInWv(WOS_INPUT_PROBE)) === 'captcha'; } catch { return false; }
+      }, [execInWv]);
+
       /**
        * 用内嵌 webview 检索 WoS，返回原始响应分片数组。
        * 遇到 passiveVerificationRequired 会先在页面里真搜一次再重试。
@@ -502,11 +535,33 @@ window.__ModuleLoader__.load({
           && (Array.isArray(p.payload) ? p.payload : [p.payload]).some((m) => String(m).includes('passiveVerificationRequired')));
 
         if (needsVerify) {
-          setWosState((prev) => ({ ...prev, phase: 'verifying', message: 'WoS 要求验证，正在页面内自动检索一次…' }));
+          setWosState((prev) => ({ ...prev, phase: 'verifying', message: 'WoS 要求验证，正在内嵌页面里自动检索一次…' }));
+
+          // 1) 等 SPA 把搜索框画出来
+          let state = await waitForInput(20000);
+          if (state === 'captcha') throw new Error(CAPTCHA_HINT);
+
+          // 2) 还找不到就切到 WoS 检索页再等一轮
+          if (state !== 'input') {
+            setWosState((prev) => ({ ...prev, phase: 'verifying', message: '正在把内嵌窗口导到 WoS 检索页…' }));
+            try { await execInWv('location.href = location.origin + "/wos/woscc/basic-search"'); } catch { /* 导航中 */ }
+            await new Promise((r) => setTimeout(r, 1500));
+            state = await waitForInput(25000);
+            if (state === 'captcha') throw new Error(CAPTCHA_HINT);
+          }
+          if (state !== 'input') {
+            throw new Error('内嵌 WoS 页面上找不到检索框：请点「展开」看看它停在哪个页面（登录/验证/空白），手动检索一次后再试。');
+          }
+
+          // 3) 在页面里真搜一次，让会话通过验证
           const action = await execInWv(wosWarmupScript(q));
-          if (action !== 'clicked') throw new Error(`自动验证失败（${action}）：请点开内嵌窗口手动搜索一次。`);
+          if (action !== 'clicked') throw new Error(`自动验证失败（${action}）：请点「展开」在内嵌窗口里手动检索一次。`);
+
           const jumped = await waitSummary();
-          if (!jumped) throw new Error('自动验证超时：请点开内嵌窗口手动搜索一次，然后再试。');
+          if (!jumped) {
+            if (await hasCaptcha()) throw new Error(CAPTCHA_HINT);
+            throw new Error('自动验证超时：请点「展开」在内嵌窗口里手动检索一次，然后再试。');
+          }
 
           const second = JSON.parse(await execInWv(wosSearchScript(q, opts)));
           if (!second.ok) throw new Error(`重试失败：${second.code || '未知原因'}`);
@@ -516,7 +571,7 @@ window.__ModuleLoader__.load({
         }
 
         return parts;
-      }, [execInWv, waitSummary, setWosState]);
+      }, [execInWv, waitSummary, waitForInput, hasCaptcha, setWosState]);
 
       /** 诊断：把内嵌窗口的实际能力上报给 Host，便于回读。 */
       const probeWv = useCallback(async () => {
@@ -528,7 +583,8 @@ window.__ModuleLoader__.load({
             sidLocal: (() => { try { return localStorage.getItem('wos_sid') || ''; } catch (e) { return ''; } })(),
             sidUrl: (location.search.match(/[?&]SID=([^&]+)/) || [])[1] || '',
             frames: [...document.querySelectorAll('iframe')].map((f) => String(f.src || '')).slice(0, 6),
-            hasInput: Boolean(document.querySelector('#search-option-0') || document.querySelector('input[name="search-main-box"]')),
+            hasInput: Boolean(document.querySelector('input[data-ta="search-criteria-input"], input[name="search-main-box"], #search-option-0')),
+            hasCaptcha: Boolean(document.querySelector('iframe[src*="recaptcha"], iframe[title*="reCAPTCHA"], .captcha-dialog, .captcha-backdrop')),
             bodyLen: String((document.body && document.body.innerHTML) || '').length
           })`);
           const info = JSON.parse(raw);
