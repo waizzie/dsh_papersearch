@@ -1,0 +1,37 @@
+# dsh-papersearch bundle patch
+#
+# Host-only bundle：一条 insert 把插件挂到当前 profile。
+# 安装：在 DSH 插件页选择本目录，或
+#   dsh plugin --profile <profile> add <本目录绝对路径>
+- insert:
+    - id: dsh-papersearch
+      name: 'dsh-papersearch'
+      config:
+        # 默认检索的源（可在每次调用 paper_search 时用 sources 覆盖）
+        defaultSources: ['wos', 'cnki', 'arxiv', 'crossref']
+        # 单次检索每源返回条数上限
+        maxResultsPerSource: 20
+        # 单次请求超时（毫秒）
+        requestTimeoutMs: 30000
+        # 浏览器引擎：连接用户自己启动的 Chrome 调试端口。
+        # 启动方式见插件目录 scripts/start-browser.cmd（双击一次即可）。
+        browser:
+          port: 9222
+          chromePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+          profileDir: ''   # 留空则用 %LOCALAPPDATA%\dsh-papersearch\chrome-profile
+        # 额外/自定义源（JSON API 适配器，无需写代码即可加网站）。示例：
+        # sources:
+        #   - id: semantic-scholar
+        #     label: Semantic Scholar
+        #     transport: http
+        #     url: 'https://api.semanticscholar.org/graph/v1/paper/search?query={query}&limit={limit}&fields=title,year,venue,authors,externalIds,citationCount,abstract'
+        #     map:
+        #       items: 'data'
+        #       title: 'title'
+        #       authors: 'authors[].name'
+        #       container: 'venue'
+        #       year: 'year'
+        #       citedBy: 'citationCount'
+        #       doi: 'externalIds.DOI'
+        #       abstract: 'abstract'
+        sources: []

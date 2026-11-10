@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build / packaging output
+dist/
+*.tgz
+
+# browser profile created by scripts/start-browser.cmd
+chrome-profile/
+
+# logs, caches, scratch output
+*.log
+tmp/
+.cache/
+*.csv
+*.json.bak
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# local secrets
+.env
+.env.*
+!.env.example

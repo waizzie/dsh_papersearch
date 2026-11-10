@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "学术检索",
+    "description": "按关键词检索 Web of Science、中国知网、arXiv、Crossref，并把结果归一化返回；支持不改代码就新增检索网站。"
+  }
+}

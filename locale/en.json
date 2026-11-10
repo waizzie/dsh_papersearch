@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Academic Search",
+    "description": "Search Web of Science, CNKI, arXiv and Crossref by keyword, with a pluggable source registry for adding more sites."
+  }
+}

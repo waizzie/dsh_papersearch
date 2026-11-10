@@ -1,0 +1,56 @@
+{
+  "name": "dsh-papersearch",
+  "version": "0.3.0",
+  "type": "module",
+  "description": "Multi-source academic literature search for DeepSeek Harness (Web of Science, CNKI, arXiv, Crossref) with a pluggable source registry and a sidebar panel.",
+  "keywords": ["dsh", "dsh-plugin", "literature", "search", "web-of-science", "cnki", "arxiv"],
+  "author": "waizzie",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/waizzie/dsh_papersearch.git"
+  },
+  "homepage": "https://github.com/waizzie/dsh_papersearch#readme",
+  "bugs": {
+    "url": "https://github.com/waizzie/dsh_papersearch/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "学术检索",
+    "description": "按关键词检索 Web of Science、中国知网、arXiv、Crossref；侧栏面板可勾选导出，结果与模型共享。桌面端 WoS 走面板内嵌窗口，无需外部浏览器。"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "scripts",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "dsh-better-sidebar": ">=0.24.0"
+  },
+  "peerDependenciesMeta": {
+    "dsh-better-sidebar": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
