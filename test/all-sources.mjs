@@ -1,5 +1,5 @@
 /**
- * 四源联测：cnki（免登录 HTTP）+ arxiv + crossref 真实检索，wos 走浏览器缺失路径。
+ * 四源联测：cnki（免登录 HTTP）+ arxiv + crossref 真实检索，wos 走「面板未连接」报错路径。
  * 用法：node test/all-sources.mjs "关键词"
  */
 
@@ -23,6 +23,12 @@ for (const provider of buildProviders(settings)) registry.register(provider);
 console.log('已注册源：', registry.list().map((p) => `${p.id}(${p.transport})`).join(', '));
 
 const browser = createBrowserEngine({ port: 9222, packageDir: process.cwd() + '\\dsh-papersearch' });
+
+// WoS 现在只走侧栏面板的内嵌窗口；离线测试用一个「面板未连接」的桩
+const wosBridge = {
+  async enqueue() { throw new Error('侧栏「文献检索」面板没有连上（离线测试桩）'); },
+  status: () => ({ online: false }),
+};
 
 console.log('\n========== 免登录三源 ==========');
 const free = await executeSearch({
@@ -54,9 +60,9 @@ const yf = await executeSearch({
 });
 console.log(yf.results.map((p) => `${p.year} ${p.title}`).join('\n') || '(无)');
 
-console.log('\n========== wos 无浏览器时的报错 ==========');
+console.log('\n========== wos 面板未连接时的报错 ==========');
 const wos = await executeSearch({
-  registry, settings, browser, query,
+  registry, settings, browser, wosBridge, query,
   sources: ['wos'], limit: 3, sort: 'relevance', dedupeResults: false,
   log: () => {},
 });

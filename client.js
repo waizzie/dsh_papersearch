@@ -39,6 +39,10 @@ window.__ModuleLoader__.load({
 
     function wosBody(query, opts = {}) {
       const limit = Math.min(Math.max(Number(opts.limit) || 10, 1), 50);
+      // 有年份条件时多取一些，由 Host 侧按年份过滤（与 lib/providers/wos.js 一致）
+      const wanted = (Number.isFinite(Number(opts.yearFrom)) || Number.isFinite(Number(opts.yearTo)))
+        ? Math.min(Math.max(limit * 3, 20), 50)
+        : limit;
       return {
         product: 'WOSCC',
         searchMode: 'general',
@@ -49,7 +53,7 @@ window.__ModuleLoader__.load({
           view: 'summary',
           sort: WOS_SORT[opts.sort] || WOS_SORT.relevance,
           first: 1,
-          count: limit,
+          count: wanted,
           jcr: false,
           analyzes: null,
         },
@@ -78,17 +82,25 @@ window.__ModuleLoader__.load({
         + '})()';
     }
 
-    /** 访客会话的被动验证：在页面里真搜一次。 */
+    /** 访客会话的被动验证：在页面里真搜一次（WoS 的 SPA 可能把界面放在同源 iframe 里）。 */
     function wosWarmupScript(query) {
       return '(async () => {'
-        + 'const input = document.querySelector("#search-option-0") || document.querySelector(\'input[name="search-main-box"]\');'
+        + 'const findInput = (doc) => doc.querySelector("#search-option-0") || doc.querySelector(\'input[name="search-main-box"]\');'
+        + 'let doc = document;'
+        + 'let input = findInput(doc);'
+        + 'if (!input) {'
+        + '  for (const frame of [...document.querySelectorAll("iframe")]) {'
+        + '    try { const d = frame.contentDocument; if (!d) continue; const i = findInput(d); if (i) { doc = d; input = i; break; } } catch (e) {}'
+        + '  }'
+        + '}'
         + 'if (!input) return "no-input";'
-        + 'const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;'
+        + 'const win = doc.defaultView || window;'
+        + 'const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value").set;'
         + 'setter.call(input, ' + JSON.stringify(String(query)) + ');'
-        + 'input.dispatchEvent(new Event("input", { bubbles: true }));'
-        + 'input.dispatchEvent(new Event("change", { bubbles: true }));'
+        + 'input.dispatchEvent(new win.Event("input", { bubbles: true }));'
+        + 'input.dispatchEvent(new win.Event("change", { bubbles: true }));'
         + 'await new Promise((r) => setTimeout(r, 600));'
-        + 'const btn = document.querySelector("button.search") || [...document.querySelectorAll("button")].find((b) => (((b.innerText || "") + " " + (b.getAttribute("aria-label") || "")).toLowerCase().includes("search")));'
+        + 'const btn = doc.querySelector("button.search") || [...doc.querySelectorAll("button")].find((b) => (((b.innerText || "") + " " + (b.getAttribute("aria-label") || "")).toLowerCase().includes("search")));'
         + 'if (!btn) return "no-button";'
         + 'btn.click();'
         + 'return "clicked";'
@@ -445,14 +457,20 @@ window.__ModuleLoader__.load({
         return typeof raw === 'string' ? raw : JSON.stringify(raw);
       }, []);
 
-      /** 等 webview 的地址变成 WoS summary（被动验证后页面会跳过去）。 */
+      /** 等 webview 的地址变成 WoS summary（被动验证后页面会跳过去；界面也可能在同源 iframe 里）。 */
       const waitSummary = useCallback(async (timeoutMs = 25000) => {
+        const probe = '(function(){'
+          + 'const hit = (h) => typeof h === "string" && (h.indexOf("/wos/woscc/summary") >= 0 || h.indexOf("/wos/woscc/full-record") >= 0);'
+          + 'if (hit(location.href)) return "top";'
+          + 'for (const f of [...document.querySelectorAll("iframe")]) { try { if (f.contentWindow && hit(f.contentWindow.location.href)) return "frame"; } catch (e) {} }'
+          + 'return "";'
+          + '})()';
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 800));
           try {
-            const href = await execInWv('location.href');
-            if (typeof href === 'string' && href.includes('/wos/woscc/summary')) return true;
+            const hit = await execInWv(probe);
+            if (hit) return true;
           } catch { /* 页面切换中，继续等 */ }
         }
         return false;
@@ -463,7 +481,12 @@ window.__ModuleLoader__.load({
        * 遇到 passiveVerificationRequired 会先在页面里真搜一次再重试。
        */
       const runWosInWebview = useCallback(async (q, opts) => {
-        const first = JSON.parse(await execInWv(wosSearchScript(q, opts)));
+        // 页面刚跳到 WoS 时 SPA 可能还没把 SID 写进 localStorage，先给几次机会
+        let first = JSON.parse(await execInWv(wosSearchScript(q, opts)));
+        for (let attempt = 0; attempt < 15 && !first.ok && first.code === 'no-sid'; attempt += 1) {
+          await new Promise((r) => setTimeout(r, 800));
+          first = JSON.parse(await execInWv(wosSearchScript(q, opts)));
+        }
         if (!first.ok) {
           throw new Error(first.code === 'no-sid'
             ? `WoS 会话未建立（页面停在 ${first.href || '未知地址'}）：请点开内嵌窗口，等页面加载完再试。`
@@ -569,25 +592,50 @@ window.__ModuleLoader__.load({
         savePrefs({ query, active, sort, limit });
       }, [query, active, sort, limit]);
 
+      /** 确保内嵌 WoS 就绪；不可用（非桌面端）或超时返回 false。 */
+      const prepareWos = useCallback(async (timeoutMs = 45000) => {
+        const phase = phaseRef.current;
+        if (phase === 'ready') return true;
+        if (phase === 'unsupported') return false;
+        // idle / error 才需要（重新）申请会话；loading / mounting / verifying 只需等
+        if (phase === 'idle' || phase === 'error') await ensureWos(phase === 'error');
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const now = phaseRef.current;
+          if (now === 'ready') return true;
+          if (now === 'unsupported' || now === 'error') return false;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        return phaseRef.current === 'ready';
+      }, [ensureWos]);
+
       const runSearch = useCallback(async () => {
         const q = query.trim();
         if (!q || busy) return;
         setBusy(true); setError(''); setNotice('');
         try {
-          // WoS 若已在内嵌窗口里就绪，就在这里跑，Host 端不必再启动外部 Chrome。
-          let wosParts;
           const list = Array.isArray(active) ? active : [];
-          if (list.includes('wos') && wos.phase === 'ready') {
-            try {
-              wosParts = await runWosInWebview(q, { limit, sort });
-            } catch (e) {
-              setError(`内嵌 WoS 检索失败：${String(e?.message ?? e)}`);
+          let wosParts;
+          let wosSkipped = '';
+
+          // WoS 只在内嵌 webview 里跑：Host 不再启动外部 Chrome。
+          if (list.includes('wos')) {
+            const ready = await prepareWos();
+            if (ready) {
+              try {
+                wosParts = await runWosInWebview(q, { limit, sort });
+              } catch (e) {
+                wosSkipped = `内嵌 WoS 检索失败，已跳过 WoS：${String(e?.message ?? e)}`;
+              }
+            } else {
+              wosSkipped = '内嵌 WoS 还没就绪，已跳过 WoS（不会启动外部浏览器）。点「准备」等它就绪后再试。';
             }
           }
 
           const value = await call('search', {
             query: q,
-            sources: Array.isArray(active) ? active : undefined,
+            panel: true,
+            sources: wosParts ? list : list.filter((id) => id !== 'wos'),
             limit,
             sort,
             ...(wosParts ? { wosParts } : {}),
@@ -596,13 +644,69 @@ window.__ModuleLoader__.load({
           setData(value);
           setPicked(new Set());
           setOpen(-1);
-          if ((value.results ?? []).length === 0) setNotice('没有检索到结果，换个关键词或放宽年份试试。');
+          if (wosSkipped) setNotice(wosSkipped);
+          else if ((value.results ?? []).length === 0) setNotice('没有检索到结果，换个关键词或放宽年份试试。');
         } catch (e) {
           setError(String(e?.message ?? e));
         } finally {
           setBusy(false);
         }
-      }, [query, active, limit, sort, busy, wos.phase, runWosInWebview]);
+      }, [query, active, limit, sort, busy, prepareWos, runWosInWebview]);
+
+      // ── 面板 ↔ Host 的 WoS 交接 ──────────────────────────────────
+      // Host 的 paper_search 把 WoS 请求排进队列，这里长轮询取出来，
+      // 在内嵌 webview 里执行，再把 WoS 原始分片回填给 Host。
+      const prepareWosRef = useRef(prepareWos);
+      prepareWosRef.current = prepareWos;
+      const runWosRef = useRef(runWosInWebview);
+      runWosRef.current = runWosInWebview;
+
+      useEffect(() => {
+        let alive = true;
+        let since = 0;
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+        const serve = async (request) => {
+          try {
+            const ready = await prepareWosRef.current();
+            if (!ready) throw new Error('内嵌 WoS 还没就绪：请点「准备」等窗口加载完');
+            const parts = await runWosRef.current(request.query, {
+              limit: request.limit,
+              sort: request.sort,
+              yearFrom: request.yearFrom,
+              yearTo: request.yearTo,
+            });
+            await call('wos-result', { id: request.id, ok: true, parts });
+          } catch (e) {
+            try {
+              await call('wos-result', { id: request.id, ok: false, error: String(e?.message ?? e) });
+            } catch { /* 回填失败只能等 Host 超时 */ }
+          }
+        };
+
+        (async () => {
+          while (alive) {
+            try {
+              const value = await call('wos-next', { since, wait: 15000 });
+              if (!alive) break;
+              const request = value?.request;
+              if (!request) continue;
+              since = request.id;
+              await serve(request);
+            } catch (e) {
+              if (!alive) break;
+              // Host 半还是旧版（没有 wos-next 接口）：停掉轮询，避免每 2 秒刷一次错误
+              if (/未知接口|HTTP 404/.test(String(e?.message ?? e))) {
+                setNotice('Host 端插件版本较旧：重启 DSH 后 WoS 侧栏通道才会生效。');
+                break;
+              }
+              await sleep(2000);
+            }
+          }
+        })();
+
+        return () => { alive = false; };
+      }, []);
 
       const doExport = useCallback(async (ext) => {
         if (!data || (data.results ?? []).length === 0) return;
@@ -628,7 +732,7 @@ window.__ModuleLoader__.load({
       const allPicked = results.length > 0 && picked.size === results.length;
 
       const wosLabel = wos.phase === 'ready'
-        ? 'WoS 内嵌已就绪'
+        ? 'WoS 内嵌已就绪（检索走侧栏）'
         : wos.phase === 'unsupported'
           ? 'WoS 内嵌不可用（需桌面端）'
           : wos.message;

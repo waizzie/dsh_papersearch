@@ -19,6 +19,7 @@ import { createBrowserEngine } from './lib/browser.js';
 import { createTools } from './lib/tools.js';
 import { registerPanelRoutes } from './lib/routes.js';
 import { buildProviders } from './lib/providers/index.js';
+import { createWosBridge } from './lib/wos-bridge.js';
 import { PROMPT_SECTION } from './lib/prompt.js';
 
 export const name = 'dsh-papersearch';
@@ -37,6 +38,10 @@ export function apply(ctx, config = {}) {
     sources: Array.isArray(config.sources) ? config.sources : [],
     mailto: config.mailto ? String(config.mailto) : '',
     exportDir: config.exportDir ? String(config.exportDir) : '',
+    // WoS 默认走侧栏面板的内嵌窗口；只有显式设成 'cdp' 才用外部 Chrome。
+    wosTransport: config.wosTransport === 'cdp' ? 'cdp' : 'panel',
+    // 外部浏览器（CDP）默认禁用：不再弹新窗口。
+    allowExternalBrowser: config.allowExternalBrowser === true,
   };
 
   const log = (msg) => { try { ctx.logger?.info?.(`[dsh-papersearch] ${msg}`); } catch { /* 日志非必需 */ } };
@@ -48,6 +53,9 @@ export function apply(ctx, config = {}) {
     packageDir: packageDir(),
     log,
   });
+
+  // Host ↔ 侧栏面板的 WoS 交接队列（面板在内嵌 webview 里执行，Host 收结果）
+  const wosBridge = createWosBridge();
 
   // 注册内置源 + 配置里的自定义源（可热重载，故用 replace）
   const disposers = [];
@@ -64,6 +72,7 @@ export function apply(ctx, config = {}) {
       registry: sharedRegistry,
       settings,
       browser,
+      wosBridge,
       workingDirectory: (() => { try { return ctx.get('workingDirectory'); } catch { return undefined; } })(),
       log,
     });
@@ -83,6 +92,7 @@ export function apply(ctx, config = {}) {
     registry: sharedRegistry,
     settings,
     browser,
+    wosBridge,
     log,
   });
   const webServerReady = (() => {
@@ -102,9 +112,10 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => () => {
     for (const dispose of disposers) { try { dispose(); } catch { /* noop */ } }
     browser.dispose();
+    wosBridge.dispose();
   }, 'dsh-papersearch: registry cleanup');
 
-  log(`已激活（默认源：${settings.defaultSources.join(', ')}）`);
+  log(`已激活（默认源：${settings.defaultSources.join(', ')}；WoS 通道：${settings.wosTransport}）`);
 }
 
 /** 本包目录（用于定位 scripts/start-browser.cmd）。 */

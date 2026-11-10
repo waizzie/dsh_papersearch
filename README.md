@@ -15,27 +15,35 @@
 
 ---
 
-## 一、为什么只有 WoS 要"借浏览器"
+## 一、WoS 为什么走侧栏内嵌窗口
 
 实测结论（本机，2026-10）：
 
 | 站点 | 裸 HTTP 直接请求 | 采用的方案 |
 | --- | --- | --- |
-| `www.webofscience.com` | SPA 外壳 200，但检索引擎强制要 OnePass 会话 SID | **浏览器会话** + 页面内同源请求 |
+| `www.webofscience.com` | SPA 外壳 200，但检索引擎强制要 OnePass 会话 SID | **侧栏面板的内嵌 `<webview>`** + 页面内同源请求 |
 | `kns.cnki.net` | 302/403 到 `/verify/home?captchaType=blockPuzzle`（滑块） | 放弃，改用下面的免费入口 |
 | `search.cnki.com.cn` | **200，真实结果 HTML，零 cookie 零 referer** | **纯 HTTP**（免登录） |
 | `export.arxiv.org` | 200，Atom XML | 纯 HTTP |
 | `api.crossref.org` | 200，JSON | 纯 HTTP |
 
-所以只有 WoS 采用**「用户已登录的浏览器 + 页面内同源 fetch」**：
-请求在页面上下文里发出，自动带上该站点的 Cookie、Referer 和站点自己维护的会话状态，
-既不用破解验证码，也不用把账号密码交给插件。知网则找到了不需要验证码的旧版检索入口，
-所以开箱即用、无需任何登录。
+WoS 需要真实浏览器的会话（Cookie + SID），但**不需要在桌面上另开一个 Chrome 窗口**：
+DSH 桌面端的侧栏面板里有一个内嵌 `<webview>`，检索请求就在这个窗口的页面上下文里发出，
+自动带上站点自己维护的会话状态，既不用破解验证码，也不用把账号密码交给插件。
 
-> 关于浏览器由谁启动：DSH 的**工具 shell** 跑在 Low Integrity 沙箱（`S-1-16-4096`）里，
-> 在该环境下 Chrome 的 crashpad 会 `OpenProcess: 拒绝访问` 直接自杀；但 **Host 进程**不受此限，
-> 所以 `paper_browser action=launch` 通常能直接拉起 Chrome（本机已实测成功）。
-> 只有 Host 也拉不起来时，才需要用户双击 `scripts/start-browser.cmd`。
+Host 与面板之间的交接是一个请求队列（`lib/wos-bridge.js`）：
+
+```
+paper_search(wos) ──enqueue──▶ Host 队列 ──长轮询──▶ 侧栏面板
+                                                    │ 在 <webview> 里同源 fetch
+        Host 解释成 Paper ◀──回填原始分片────────────┘
+```
+
+面板没打开或没准备好时，`paper_search` 会立刻返回可读原因（**不会回退到外部浏览器**）。
+知网、arXiv、Crossref 走纯 HTTP，装完即用、无需任何登录。
+
+> 旧的外部 Chrome 方案（9222 调试端口 + CDP）仍然保留，但默认关闭：
+> 只有把配置改成 `wosTransport: cdp` 才会用到它。
 
 ---
 
@@ -60,39 +68,26 @@ dsh plugin --profile <你的 profile> add "<克隆目录的绝对路径>"
 
 ---
 
-## 三、首次使用：WoS 需要一个浏览器（只有 WoS 需要）
+## 三、首次使用：在侧栏准备 WoS 内嵌窗口
 
 > **知网、arXiv、Crossref 不需要这一步**——装完就能直接检索。
 
-先试让 DSH 自己拉起浏览器：
+1. 打开右侧栏的**「文献检索」**面板；
+2. 点 WoS 那一行的**「准备」**，面板会申请一个内嵌浏览器会话并加载 WoS；
+3. 等状态变成 **「WoS 内嵌已就绪（检索走侧栏）」**（首次通常 30~40 秒，站点重定向链较长）；
+4. 需要机构订阅结果时，点「展开」在内嵌窗口里登录一次（会话记在独立分区里，通常只需做一次）；
+5. 之后在面板里检索，或让模型调用 `paper_search`，WoS 都会走这个内嵌窗口。
+
+检查状态：
 
 ```
-paper_browser  action=launch  url=https://www.webofscience.com/wos/woscc/basic-search
-```
-
-Host 进程通常能直接拉起 Chrome。若提示权限失败，再**双击**插件目录下的：
-
-```
-scripts\start-browser.cmd
-```
-
-它会用**独立 profile**（`%LOCALAPPDATA%\dsh-papersearch\chrome-profile`）启动一个 Chrome，
-打开 9222 调试端口，并跳到 WoS 首页。你的日常 Chrome 不受影响。
-
-在那个窗口里：
-
-1. 等页面加载完——地址栏出现 `?SID=…` 即表示会话已建立（**访客也可以直接检索**，不强制登录）；
-2. 想拿机构订阅的结果集就顺手登录；
-3. 之后回到 DSH 直接 `paper_search` 即可——会话保存在独立 profile 里，通常只需做一次。
-
-检查是否就绪：
-
-```
-paper_browser  action=status
 paper_sources
 ```
 
-会话失效（例如知网又弹验证码）时，`paper_search` 会返回明确原因，照着重新打开窗口过一次即可。
+它会显示「WoS 通道：侧栏面板已连接」或「未连接」。面板没连上时，
+`paper_search` 会提示你打开面板并点「准备」，不会启动任何外部浏览器窗口。
+
+> 访客也能检索：内嵌 WoS 首次调用接口若要求被动验证，面板会自动在页面里真搜一次再重试。
 
 ---
 
@@ -101,8 +96,8 @@ paper_sources
 | 工具 | 作用 |
 | --- | --- |
 | `paper_search` | 跨源检索。参数：`query`（必填）、`sources`、`limit`、`year_from`、`year_to`、`sort`（relevance/date/cited）、`with_abstract`、`dedupe`、`export_path` |
-| `paper_sources` | 列出所有源、默认源、浏览器会话状态 |
-| `paper_browser` | `status` / `launch` / `open`（打开某个源页面用于登录） |
+| `paper_sources` | 列出所有源、默认源、WoS 面板通道与浏览器状态 |
+| `paper_browser` | 默认只有 `status`；`launch` / `open` 需要配置 `allowExternalBrowser: true`（默认关闭） |
 
 导出：给 `paper_search` 传 `export_path: "results.csv"`（也支持 `.json` / `.bib`），
 相对路径基于 DSH 进程工作目录，返回绝对路径。
@@ -266,15 +261,16 @@ export function apply(ctx) {
 - **WoS 不需要付费也能搜**，但结果集与机构订阅有关；插件不绕过付费墙，也不破解验证码。
 - 知网走的是免费检索入口，**没有 DOI / 卷 / 页码**；需要这些字段请从返回的详情页链接打开。
 - 知网结果以期刊为主，学位论文/会议覆盖取决于该入口的收录。
-- WoS 首次检索可能触发一次被动验证（插件会自动代跑一次页面内检索）；
-  若自动触发失败，手动在窗口里搜一次即可。
-- 浏览器窗口必须保持打开；关掉后 `paper_search` 会提示重新启动。
+- WoS 首次检索可能触发一次被动验证（面板会自动在内嵌页面里代跑一次检索）；
+  若自动触发失败，点「展开」在内嵌窗口里手动搜一次即可。
+- **WoS 的检索由侧栏面板执行**：面板没打开或没准备时，`paper_search` 会提示先在侧栏就绪；
+  它不会启动外部浏览器，也不会在桌面上弹窗。
 - 反爬策略变化可能导致某个源失效——此时该源报错、其它源照常返回，不影响整体检索。
 - 相对路径导出以**会话工作目录**为基准；取不到会话目录时请直接传绝对路径。
 
 ---
 
-## 八、验证记录（本机实测，2026-10-28）
+## 八、验证记录（本机实测）
 
 | 项目 | 结果 |
 | --- | --- |
@@ -283,11 +279,10 @@ export function apply(ctx) {
 | 知网年份过滤 2020–2022 / 2023–2024 / 2015–2018 | 各 3 条，年份全部落在区间内 |
 | 知网被引排序 | 首条《企业数字化转型与资本市场表现》被引 13677 |
 | `paper_sources` | 4 个源 + 浏览器状态正确回报 |
-| `paper_browser` 未启动时 | 返回可操作的提示与启动脚本路径 |
 | CSV / JSON / BibTeX 导出 | 三种格式均生成且编码正确（CSV 带 BOM，Excel 可直开） |
-| `paper_browser launch` | 由 Host 进程直接拉起 Chrome 成功（端口 9222） |
 | **WoS 实检索 `graphrag`** | 命中 **274** 条；取回 10 条，标题/作者/刊名/年卷期页/DOI/被引/摘要全部正确 |
 | WoS 访客会话 | 自动跑一次页面内检索通过 `passiveVerificationRequired`，随后接口放行 |
+| WoS 侧栏通道 | 内嵌 `<webview>` 完成重定向链并拿到 SID（`webofscience.clarivate.cn/wos/?Func=Frame&…&SID=…`），dom-ready |
 | 相对路径导出 | 基准为会话工作目录（此前会落到 Host 进程 cwd，已修） |
 
 ---
@@ -302,7 +297,8 @@ dsh-papersearch/
 │  ├─ registry.js           # 源注册表（扩展点）
 │  ├─ paper.js              # 归一化 Paper 模型、去重、排序
 │  ├─ http.js               # 纯 HTTP 传输（超时/重试/UA/XML 取值）
-│  ├─ browser.js            # CDP 浏览器引擎（连接用户启动的 Chrome）
+│  ├─ browser.js            # CDP 浏览器引擎（旧通道，默认不用）
+│  ├─ wos-bridge.js         # Host ↔ 侧栏面板的 WoS 请求队列
 │  ├─ tools.js              # paper_search / paper_sources / paper_browser
 │  ├─ format.js             # 结果渲染
 │  ├─ export.js             # CSV / JSON / BibTeX 导出
@@ -315,7 +311,7 @@ dsh-papersearch/
 │     ├─ crossref.js
 │     └─ jsonapi.js         # 配置式 JSON API 适配器
 ├─ scripts/start-browser.cmd
-├─ test/                    # 离线冒烟测试（不依赖 DSH）
+├─ test/                    # 离线测试（不依赖 DSH）
 ├─ locale/                  # 中英文展示名
 └─ icon.svg
 ```
@@ -326,7 +322,9 @@ dsh-papersearch/
 
 ```powershell
 node test/smoke.mjs "retrieval augmented generation"   # 免登录源 + 渲染 + 三种导出
-node test/all-sources.mjs "人工智能"                    # 四源联测（wos 走无浏览器报错路径）
+node test/all-sources.mjs "人工智能"                    # 四源联测（wos 走面板未连接报错路径）
+node test/wos-bridge.mjs                               # WoS 面板桥队列语义（离线）
+node test/wos-panel-flow.mjs                           # Host 侧面板链路 + 归一化（离线）
 node test/browser-offline.mjs                          # 浏览器引擎离线行为
 ```
 

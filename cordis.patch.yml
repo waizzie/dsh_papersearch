@@ -13,8 +13,12 @@
         maxResultsPerSource: 20
         # 单次请求超时（毫秒）
         requestTimeoutMs: 30000
-        # 浏览器引擎：连接用户自己启动的 Chrome 调试端口。
-        # 启动方式见插件目录 scripts/start-browser.cmd（双击一次即可）。
+        # WoS 通道：panel = 侧栏面板的内嵌窗口（默认，不弹外部浏览器）；
+        #          cdp   = 外部 Chrome 调试端口（旧方案，需要自己启动浏览器）
+        wosTransport: panel
+        # 是否允许 paper_browser 启动/打开外部浏览器。默认关闭。
+        allowExternalBrowser: false
+        # 外部浏览器引擎（仅 wosTransport: cdp 时使用）
         browser:
           port: 9222
           chromePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'

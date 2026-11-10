@@ -1,9 +1,17 @@
 {
   "name": "dsh-papersearch",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Multi-source academic literature search for DeepSeek Harness (Web of Science, CNKI, arXiv, Crossref) with a pluggable source registry and a sidebar panel.",
-  "keywords": ["dsh", "dsh-plugin", "literature", "search", "web-of-science", "cnki", "arxiv"],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "literature",
+    "search",
+    "web-of-science",
+    "cnki",
+    "arxiv"
+  ],
   "author": "waizzie",
   "license": "MIT",
   "repository": {
